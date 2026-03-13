@@ -74,10 +74,4 @@ Built solo in ~4 days as a complete beginner to Flutter and Flame.
 
 ---
 
-## 📜 License
-
-MIT License — see [LICENSE](LICENSE) file.
-
----
-
 *SURVEILLANCE DIVISION · SECTOR 7 · CLASSIFIED*
