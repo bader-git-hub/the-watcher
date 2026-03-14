@@ -345,6 +345,7 @@ class SoundEngine {
 
   static void stopMusic() {
     _musicPlaying = false;
+    _musicMaster = null;
     for (final n in _musicNodes) {
       try {
         n.callMethod('stop');
@@ -567,6 +568,12 @@ class SoundEngine {
         _musicNodes.add(o);
       }
     } catch (_) {}
+  }
+
+  static void dossierOpen() {
+    _osc(1200, 'sine', 0.04, freqEnd: 800, v: 0.18, attack: 0.001, rel: 0.02);
+    _osc(600, 'sine', 0.08, v: 0.12, attack: 0.005, rel: 0.05, startOff: 0.03);
+    _noise(0.03, 0.08, hipass: 2000);
   }
 
   static void ambientTick() {
@@ -2256,6 +2263,8 @@ class JuiceState {
   double motionDetectedTimer = 0;
   bool signalLoss = false;
   double signalLossTimer = 0;
+  double chromAberration = 0;
+  double streakPulse = 0;
   final Random _rng = Random();
   void triggerFlag() {
     flashColor = const Color(0xFFff3355);
@@ -2270,39 +2279,42 @@ class JuiceState {
   }
 
   void triggerWrongFlag() {
-    shakeAmount = 12.0;
-    shakeDuration = 0.6;
+    shakeAmount = 16.0;
+    shakeDuration = 0.8;
     flashColor = const Color(0xFFff0000);
-    flashOpacity = 0.45;
-    flashDuration = 0.7;
+    flashOpacity = 0.55;
+    flashDuration = 0.8;
     stampText = 'ERROR';
     stampColor = const Color(0xFFff0000);
     stampOpacity = 1.0;
-    stampDuration = 1.6;
-    stampScale = 2.0;
+    stampDuration = 1.8;
+    stampScale = 2.2;
     vignettePulse = 1.0;
+    chromAberration = 1.0;
   }
 
   void triggerCorrectClear() {
     flashColor = const Color(0xFF39ff6a);
-    flashOpacity = 0.12;
+    flashOpacity = 0.14;
     flashDuration = 0.3;
     stampText = 'CLEARED';
     stampColor = const Color(0xFF39ff6a);
     stampOpacity = 1.0;
     stampDuration = 0.9;
     stampScale = 1.2;
+    streakPulse = 0.5;
   }
 
   void triggerCorrectFlag() {
     flashColor = const Color(0xFFffb347);
-    flashOpacity = 0.15;
-    flashDuration = 0.3;
+    flashOpacity = 0.18;
+    flashDuration = 0.35;
     stampText = 'CONFIRMED';
     stampColor = const Color(0xFFffb347);
     stampOpacity = 1.0;
-    stampDuration = 1.0;
-    stampScale = 1.3;
+    stampDuration = 1.1;
+    stampScale = 1.4;
+    vignettePulse = 0.4;
   }
 
   void triggerCameraSwitch() {
@@ -2371,12 +2383,15 @@ class JuiceState {
     }
     if (vignettePulse > 0)
       vignettePulse = (vignettePulse - dt * 2.0).clamp(0.0, 1.0);
+    if (chromAberration > 0)
+      chromAberration = (chromAberration - dt * 3.0).clamp(0.0, 1.0);
+    if (streakPulse > 0) streakPulse = (streakPulse - dt * 2.5).clamp(0.0, 1.0);
     warningPulse = roundTimer < 10
         ? (sin(roundTimer * 5) * 0.5 + 0.5) * 0.9
         : 0;
     glitchTimer -= dt;
     if (glitchTimer <= 0) {
-      glitchTimer = 2 + _rng.nextDouble() * 5;
+      glitchTimer = 0.8 + _rng.nextDouble() * 3;
       showGlitch = true;
       glitchY = _rng.nextDouble();
     }
@@ -2695,11 +2710,13 @@ class TheWatcherGame extends FlameGame {
     }
     generated.shuffle(_rng);
     for (int i = 0; i < generated.length; i++) {
+      final spawnW = (size.x - 240).clamp(100.0, size.x - 100);
+      final spawnH = (size.y - 280).clamp(80.0, size.y - 160);
       final c = CitizenComponent(
         data: generated[i],
         startPos: Vector2(
-          120 + _rng.nextDouble() * (size.x - 240),
-          160 + _rng.nextDouble() * (size.y - 280),
+          120 + _rng.nextDouble() * spawnW,
+          160 + _rng.nextDouble() * spawnH,
         ),
         game: this,
         spawnDelay: i * difficulty.spawnDelay,
@@ -2735,6 +2752,11 @@ class TheWatcherGame extends FlameGame {
     for (final c in citizens) c.removeFromParent();
     citizens.clear();
     switchCamera(index);
+    // reset timer and event state for the new camera
+    roundTimer = difficulty.roundDuration;
+    _eventTimer = 0;
+    activeEvent = null;
+    if (overlays.isActive('Event')) overlays.remove('Event');
     _spawnCitizens();
   }
 
@@ -2742,6 +2764,7 @@ class TheWatcherGame extends FlameGame {
     selectedComponent?.deselect();
     selectedCitizen = data;
     selectedComponent = comp;
+    SoundEngine.dossierOpen();
     overlays.remove('Profile');
     overlays.add('Profile');
   }
@@ -2818,7 +2841,7 @@ class TheWatcherGame extends FlameGame {
     Future.delayed(const Duration(milliseconds: 700), () {
       if (comp.isMounted) comp.removeFromParent();
       citizens.remove(comp);
-      checkRoundComplete();
+      if (!isGameOver) checkRoundComplete();
     });
   }
 
@@ -3106,7 +3129,6 @@ class TheWatcherGame extends FlameGame {
   }
 
   void restart() {
-    // regenerate configs so citizens properly vary per camera
     if (currentPreset != 'custom')
       roundConfigs = generateRoundConfigs(currentPreset);
     wrongFlags = 0;
@@ -3138,6 +3160,7 @@ class TheWatcherGame extends FlameGame {
     }
     overlays.remove('GameOver');
     overlays.remove('Victory');
+    SoundEngine.stopMusic();
     _showRoundIntro();
   }
 
@@ -3510,6 +3533,19 @@ class CitizenComponent extends PositionComponent
     // death: dissolve + color tint
     final deathFrac = _dying ? (1.0 - _deathTimer / 0.7).clamp(0.0, 1.0) : 0.0;
     final deathAlpha = _dying ? (1.0 - deathFrac * 1.1).clamp(0.0, 1.0) : 1.0;
+
+    // shadow — ellipse on the ground below citizen
+    if (_spawned && !_dying) {
+      final shadowAlpha = 0.18 * (1.0 - deathFrac);
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: Offset(size.x / 2, size.y + 2),
+          width: size.x * 0.9,
+          height: 6,
+        ),
+        Paint()..color = Colors.black.withOpacity(shadowAlpha),
+      );
+    }
 
     canvas.save();
     canvas.translate(0, bob);
@@ -5387,7 +5423,12 @@ class _JuiceState extends State<JuiceOverlay> {
         return IgnorePointer(
           child: Stack(
             children: [
-              Positioned.fill(child: Container(color: tint.withOpacity(0.04))),
+              // Camera colour tint — stronger moodier feel
+              Positioned.fill(child: Container(color: tint.withOpacity(0.07))),
+              // Coloured edge glow per camera
+              Positioned.fill(
+                child: CustomPaint(painter: _CamVignettePainter(tint)),
+              ),
               Positioned.fill(
                 child: CustomPaint(
                   painter: ScanlinePainter(opacity: j.flickerOpacity),
@@ -5396,11 +5437,25 @@ class _JuiceState extends State<JuiceOverlay> {
               Positioned.fill(
                 child: CustomPaint(
                   painter: VignettePainter(
-                    baseOpacity: 0.6,
-                    pulseOpacity: j.vignettePulse * 0.3,
+                    baseOpacity: 0.65,
+                    pulseOpacity: j.vignettePulse * 0.4,
                   ),
                 ),
               ),
+              // Streak pulse — green flash border
+              if (j.streakPulse > 0)
+                Positioned.fill(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: const Color(
+                          0xFF39ff6a,
+                        ).withOpacity(j.streakPulse * 0.7),
+                        width: 4,
+                      ),
+                    ),
+                  ),
+                ),
               if (j.warningPulse > 0)
                 Positioned.fill(
                   child: Container(
@@ -5409,7 +5464,7 @@ class _JuiceState extends State<JuiceOverlay> {
                         color: const Color(
                           0xFFff3355,
                         ).withOpacity(j.warningPulse),
-                        width: 6,
+                        width: 7,
                       ),
                     ),
                   ),
@@ -5419,16 +5474,30 @@ class _JuiceState extends State<JuiceOverlay> {
                   top: size.height * j.glitchY,
                   left: 0,
                   right: 0,
-                  child: Container(height: 2, color: tint.withOpacity(0.3)),
+                  child: Container(height: 2, color: tint.withOpacity(0.45)),
+                ),
+              if (j.showGlitch)
+                Positioned(
+                  top: size.height * j.glitchY + 4,
+                  left: size.width * 0.2,
+                  right: 0,
+                  child: Container(height: 1, color: tint.withOpacity(0.2)),
                 ),
               if (j.signalLoss)
                 Positioned.fill(
-                  child: Container(color: Colors.white.withOpacity(0.05)),
+                  child: Container(color: Colors.white.withOpacity(0.06)),
                 ),
               if (j.flashOpacity > 0)
                 Positioned.fill(
                   child: Container(
                     color: j.flashColor.withOpacity(j.flashOpacity),
+                  ),
+                ),
+              // Chromatic aberration on wrong flag
+              if (j.chromAberration > 0)
+                Positioned.fill(
+                  child: CustomPaint(
+                    painter: _ChromAberrationPainter(j.chromAberration),
                   ),
                 ),
               if (j.showStaticBurst)
@@ -5629,6 +5698,64 @@ class _StaticPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_) => true;
+}
+
+class _CamVignettePainter extends CustomPainter {
+  final Color tint;
+  const _CamVignettePainter(this.tint);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromLTWH(0, 0, size.width, size.height);
+    // Subtle coloured edge glow — makes each camera feel distinct
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [Colors.transparent, tint.withOpacity(0.08)],
+          stops: const [0.5, 1.0],
+        ).createShader(rect),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_CamVignettePainter o) => o.tint != tint;
+}
+
+class _ChromAberrationPainter extends CustomPainter {
+  final double amount;
+  const _ChromAberrationPainter(this.amount);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final shift = amount * 8;
+    // Red channel shifted left, blue shifted right
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      Paint()
+        ..color = const Color(0xFFff0000).withOpacity(amount * 0.06)
+        ..blendMode = BlendMode.screen,
+    );
+    canvas.save();
+    canvas.translate(-shift, 0);
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      Paint()
+        ..color = const Color(0xFFff0000).withOpacity(amount * 0.04)
+        ..blendMode = BlendMode.screen,
+    );
+    canvas.restore();
+    canvas.save();
+    canvas.translate(shift, 0);
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      Paint()
+        ..color = const Color(0xFF0000ff).withOpacity(amount * 0.04)
+        ..blendMode = BlendMode.screen,
+    );
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_ChromAberrationPainter o) => o.amount != amount;
 }
 
 // ─── HUD ──────────────────────────────────────────────────────────────────────
@@ -6400,7 +6527,6 @@ class _ProfileState extends State<ProfileOverlay> {
             ? (fleeComp._fleeTimer / 7.0).clamp(0.0, 1.0)
             : 0.0;
         final isVip = game.vipTarget == citizen;
-        // Suspicion meter: grows as clues are revealed
         final suspicionFrac = (ca / citizen.clues.length.clamp(1, 99)).clamp(
           0.0,
           1.0,
@@ -6408,580 +6534,638 @@ class _ProfileState extends State<ProfileOverlay> {
         final accentColor = isVip
             ? const Color(0xFFff88ff)
             : const Color(0xFFff4d00);
-        return Align(
-          alignment: Alignment.centerRight,
-          child: Container(
-            width: 295,
-            margin: const EdgeInsets.only(top: 85, bottom: 32),
-            decoration: BoxDecoration(
-              color: const Color(0xFF07070b).withOpacity(0.98),
-              border: Border(left: BorderSide(color: accentColor, width: 2)),
+
+        // Get citizen screen position and clamp dossier so it stays on screen
+        final comp = game.selectedComponent;
+        final sw = MediaQuery.of(context).size.width;
+        final sh = MediaQuery.of(context).size.height;
+        const dossierW = 300.0;
+        const dossierMaxH = 420.0;
+        double dx = 0, dy = 0;
+        if (comp != null) {
+          // citizen position in game coords = screen coords (1:1 on web)
+          final cx = comp.position.x;
+          final cy = comp.position.y;
+          // place dossier to the right of citizen, flip left if too close to right edge
+          dx = cx + 36 + dossierW > sw ? cx - dossierW - 36 : cx + 36;
+          // vertically center on citizen, clamp to screen
+          dy = (cy - dossierMaxH / 2).clamp(48.0, sh - dossierMaxH - 8);
+        } else {
+          dx = (sw - dossierW) / 2;
+          dy = (sh - dossierMaxH) / 2;
+        }
+
+        return Stack(
+          children: [
+            // Backdrop — tap to dismiss
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: game.closeProfile,
+                child: Container(color: Colors.black.withOpacity(0.45)),
+              ),
             ),
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Header
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    decoration: const BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(color: Color(0xFF111118)),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Text(
-                          'ID #${citizen.trackingId}',
-                          style: TextStyle(
-                            color: isVip
-                                ? const Color(0xFFff88ff)
-                                : const Color(0xFF39ff6a),
-                            fontSize: 9,
-                            letterSpacing: 2,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          isVip ? '⭐ VIP DOSSIER' : 'CITIZEN DOSSIER',
-                          style: TextStyle(
-                            color: accentColor,
-                            fontSize: 9,
-                            letterSpacing: 3,
-                          ),
-                        ),
-                        const Spacer(),
-                        GestureDetector(
-                          onTap: game.closeProfile,
-                          child: const Icon(
-                            Icons.close,
-                            color: Color(0xFF444455),
-                            size: 14,
-                          ),
-                        ),
-                      ],
-                    ),
+            // Dossier — follows citizen
+            Positioned(
+              left: dx,
+              top: dy,
+              width: dossierW,
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: dossierMaxH),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF07070b).withOpacity(0.98),
+                  border: Border.all(
+                    color: accentColor.withOpacity(0.6),
+                    width: 1.5,
                   ),
-                  // Pixel portrait + basic info side by side
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Big pixel portrait with surveillance frame
-                        Stack(
-                          children: [
-                            Container(
-                              width: 90,
-                              height: 120,
-                              decoration: BoxDecoration(
-                                border: Border.all(
-                                  color: accentColor.withOpacity(0.5),
-                                  width: 1.5,
-                                ),
-                                color: Colors.black,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: accentColor.withOpacity(0.15),
-                                    blurRadius: 8,
-                                    spreadRadius: 1,
-                                  ),
-                                ],
-                              ),
-                              child: CustomPaint(
-                                size: const Size(90, 120),
-                                painter: _PortraitPainter(citizen: citizen),
-                              ),
-                            ),
-                            // Corner brackets
-                            Positioned(
-                              top: 3,
-                              left: 3,
-                              child: CustomPaint(
-                                size: const Size(12, 12),
-                                painter: _CornerBracket(
-                                  color: accentColor,
-                                  tl: true,
-                                ),
-                              ),
-                            ),
-                            Positioned(
-                              top: 3,
-                              right: 3,
-                              child: CustomPaint(
-                                size: const Size(12, 12),
-                                painter: _CornerBracket(
-                                  color: accentColor,
-                                  tr: true,
-                                ),
-                              ),
-                            ),
-                            Positioned(
-                              bottom: 3,
-                              left: 3,
-                              child: CustomPaint(
-                                size: const Size(12, 12),
-                                painter: _CornerBracket(
-                                  color: accentColor,
-                                  bl: true,
-                                ),
-                              ),
-                            ),
-                            Positioned(
-                              bottom: 3,
-                              right: 3,
-                              child: CustomPaint(
-                                size: const Size(12, 12),
-                                painter: _CornerBracket(
-                                  color: accentColor,
-                                  br: true,
-                                ),
-                              ),
-                            ),
-                            // Tracking ID at bottom of portrait
-                            Positioned(
-                              bottom: 6,
-                              left: 0,
-                              right: 0,
-                              child: Center(
-                                child: Text(
-                                  '#${citizen.trackingId.toString().padLeft(4, '0')}',
-                                  style: TextStyle(
-                                    color: accentColor.withOpacity(0.8),
-                                    fontSize: 8,
-                                    letterSpacing: 2,
-                                    fontFamily: 'monospace',
-                                  ),
-                                ),
-                              ),
-                            ),
-                            // REC dot
-                            Positioned(
-                              top: 6,
-                              left: 8,
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    width: 5,
-                                    height: 5,
-                                    decoration: const BoxDecoration(
-                                      color: Color(0xFFff3355),
-                                      shape: BoxShape.circle,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 3),
-                                  const Text(
-                                    'REC',
-                                    style: TextStyle(
-                                      color: Color(0xFFff3355),
-                                      fontSize: 6,
-                                      letterSpacing: 1,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
+                  boxShadow: [
+                    BoxShadow(
+                      color: accentColor.withOpacity(0.15),
+                      blurRadius: 20,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Header
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
                         ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              // Name with classification bar
-                              Container(
-                                width: double.infinity,
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 3,
-                                  horizontal: 6,
-                                ),
-                                color: accentColor.withOpacity(0.08),
-                                child: Text(
-                                  citizen.name.toUpperCase(),
-                                  style: const TextStyle(
-                                    color: Color(0xFFdddde8),
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 1,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              _InfoRow('AGE', '${citizen.age}', accentColor),
-                              const SizedBox(height: 4),
-                              _InfoRow(
-                                'ROLE',
-                                citizen.job.toUpperCase(),
-                                const Color(0xFF556677),
-                              ),
-                              const SizedBox(height: 4),
-                              _InfoRow(
-                                'STATUS',
-                                citizen.isTrulySuspicious &&
-                                        citizen.dissidentType !=
-                                            DissidentType.decoy
-                                    ? 'FLAGGED FOR REVIEW'
-                                    : 'UNDER OBSERVATION',
-                                citizen.isTrulySuspicious &&
-                                        citizen.dissidentType !=
-                                            DissidentType.decoy
-                                    ? const Color(0xFFff3355)
-                                    : const Color(0xFF39ff6a),
-                              ),
-                              if (isVip) ...[
-                                const SizedBox(height: 8),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    border: Border.all(
-                                      color: const Color(
-                                        0xFFff88ff,
-                                      ).withOpacity(0.4),
-                                    ),
-                                    color: const Color(
-                                      0xFFff88ff,
-                                    ).withOpacity(0.08),
-                                  ),
-                                  child: const Text(
-                                    '⭐ VIP — 3× SCORE BONUS',
-                                    style: TextStyle(
-                                      color: Color(0xFFff88ff),
-                                      fontSize: 8,
-                                      letterSpacing: 1,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ],
+                        decoration: const BoxDecoration(
+                          border: Border(
+                            bottom: BorderSide(color: Color(0xFF111118)),
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                  // Suspicion meter
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
+                        child: Row(
                           children: [
-                            const Text(
-                              'SUSPICION LEVEL',
+                            Text(
+                              'ID #${citizen.trackingId}',
                               style: TextStyle(
-                                color: Color(0xFF2a2a38),
-                                fontSize: 8,
+                                color: isVip
+                                    ? const Color(0xFFff88ff)
+                                    : const Color(0xFF39ff6a),
+                                fontSize: 9,
+                                letterSpacing: 2,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              isVip ? '⭐ VIP DOSSIER' : 'CITIZEN DOSSIER',
+                              style: TextStyle(
+                                color: accentColor,
+                                fontSize: 9,
                                 letterSpacing: 3,
                               ),
                             ),
                             const Spacer(),
-                            Text(
-                              '${(suspicionFrac * 100).toInt()}%',
-                              style: TextStyle(
-                                color: _suspColor(suspicionFrac),
-                                fontSize: 9,
-                                fontWeight: FontWeight.bold,
+                            GestureDetector(
+                              onTap: game.closeProfile,
+                              child: const Icon(
+                                Icons.close,
+                                color: Color(0xFF444455),
+                                size: 14,
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 4),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(1),
-                          child: LinearProgressIndicator(
-                            value: suspicionFrac,
-                            backgroundColor: const Color(0xFF0d0d14),
-                            valueColor: AlwaysStoppedAnimation(
-                              _suspColor(suspicionFrac),
-                            ),
-                            minHeight: 6,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  // Flee warning
-                  if (isPanicked && fleeP > 0)
-                    Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 12),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
                       ),
-                      color: const Color(0xFFff8800).withOpacity(0.08),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Text(
-                                '⚠ SUBJECT MAY FLEE',
-                                style: TextStyle(
-                                  color: Color(0xFFff8800),
-                                  fontSize: 9,
-                                  letterSpacing: 2,
-                                  fontWeight: FontWeight.bold,
+                      // Pixel portrait + basic info side by side
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Big pixel portrait with surveillance frame
+                            Stack(
+                              children: [
+                                Container(
+                                  width: 90,
+                                  height: 120,
+                                  decoration: BoxDecoration(
+                                    border: Border.all(
+                                      color: accentColor.withOpacity(0.5),
+                                      width: 1.5,
+                                    ),
+                                    color: Colors.black,
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: accentColor.withOpacity(0.15),
+                                        blurRadius: 8,
+                                        spreadRadius: 1,
+                                      ),
+                                    ],
+                                  ),
+                                  child: CustomPaint(
+                                    size: const Size(90, 120),
+                                    painter: _PortraitPainter(citizen: citizen),
+                                  ),
                                 ),
+                                // Corner brackets
+                                Positioned(
+                                  top: 3,
+                                  left: 3,
+                                  child: CustomPaint(
+                                    size: const Size(12, 12),
+                                    painter: _CornerBracket(
+                                      color: accentColor,
+                                      tl: true,
+                                    ),
+                                  ),
+                                ),
+                                Positioned(
+                                  top: 3,
+                                  right: 3,
+                                  child: CustomPaint(
+                                    size: const Size(12, 12),
+                                    painter: _CornerBracket(
+                                      color: accentColor,
+                                      tr: true,
+                                    ),
+                                  ),
+                                ),
+                                Positioned(
+                                  bottom: 3,
+                                  left: 3,
+                                  child: CustomPaint(
+                                    size: const Size(12, 12),
+                                    painter: _CornerBracket(
+                                      color: accentColor,
+                                      bl: true,
+                                    ),
+                                  ),
+                                ),
+                                Positioned(
+                                  bottom: 3,
+                                  right: 3,
+                                  child: CustomPaint(
+                                    size: const Size(12, 12),
+                                    painter: _CornerBracket(
+                                      color: accentColor,
+                                      br: true,
+                                    ),
+                                  ),
+                                ),
+                                // Tracking ID at bottom of portrait
+                                Positioned(
+                                  bottom: 6,
+                                  left: 0,
+                                  right: 0,
+                                  child: Center(
+                                    child: Text(
+                                      '#${citizen.trackingId.toString().padLeft(4, '0')}',
+                                      style: TextStyle(
+                                        color: accentColor.withOpacity(0.8),
+                                        fontSize: 8,
+                                        letterSpacing: 2,
+                                        fontFamily: 'monospace',
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                // REC dot
+                                Positioned(
+                                  top: 6,
+                                  left: 8,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        width: 5,
+                                        height: 5,
+                                        decoration: const BoxDecoration(
+                                          color: Color(0xFFff3355),
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 3),
+                                      const Text(
+                                        'REC',
+                                        style: TextStyle(
+                                          color: Color(0xFFff3355),
+                                          fontSize: 6,
+                                          letterSpacing: 1,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // Name with classification bar
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 3,
+                                      horizontal: 6,
+                                    ),
+                                    color: accentColor.withOpacity(0.08),
+                                    child: Text(
+                                      citizen.name.toUpperCase(),
+                                      style: const TextStyle(
+                                        color: Color(0xFFdddde8),
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 1,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  _InfoRow(
+                                    'AGE',
+                                    '${citizen.age}',
+                                    accentColor,
+                                  ),
+                                  const SizedBox(height: 4),
+                                  _InfoRow(
+                                    'ROLE',
+                                    citizen.job.toUpperCase(),
+                                    const Color(0xFF556677),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  _InfoRow(
+                                    'STATUS',
+                                    citizen.isTrulySuspicious &&
+                                            citizen.dissidentType !=
+                                                DissidentType.decoy
+                                        ? 'FLAGGED FOR REVIEW'
+                                        : 'UNDER OBSERVATION',
+                                    citizen.isTrulySuspicious &&
+                                            citizen.dissidentType !=
+                                                DissidentType.decoy
+                                        ? const Color(0xFFff3355)
+                                        : const Color(0xFF39ff6a),
+                                  ),
+                                  if (isVip) ...[
+                                    const SizedBox(height: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        border: Border.all(
+                                          color: const Color(
+                                            0xFFff88ff,
+                                          ).withOpacity(0.4),
+                                        ),
+                                        color: const Color(
+                                          0xFFff88ff,
+                                        ).withOpacity(0.08),
+                                      ),
+                                      child: const Text(
+                                        '⭐ VIP — 3× SCORE BONUS',
+                                        style: TextStyle(
+                                          color: Color(0xFFff88ff),
+                                          fontSize: 8,
+                                          letterSpacing: 1,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
-                              const Spacer(),
-                              Text(
-                                '${((1 - fleeP) * 7).toInt()}s',
-                                style: const TextStyle(
-                                  color: Color(0xFFff8800),
-                                  fontSize: 9,
+                            ),
+                          ],
+                        ),
+                      ),
+                      // Suspicion meter
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Text(
+                                  'SUSPICION LEVEL',
+                                  style: TextStyle(
+                                    color: Color(0xFF2a2a38),
+                                    fontSize: 8,
+                                    letterSpacing: 3,
+                                  ),
                                 ),
+                                const Spacer(),
+                                Text(
+                                  '${(suspicionFrac * 100).toInt()}%',
+                                  style: TextStyle(
+                                    color: _suspColor(suspicionFrac),
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(1),
+                              child: LinearProgressIndicator(
+                                value: suspicionFrac,
+                                backgroundColor: const Color(0xFF0d0d14),
+                                valueColor: AlwaysStoppedAnimation(
+                                  _suspColor(suspicionFrac),
+                                ),
+                                minHeight: 6,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      // Flee warning
+                      if (isPanicked && fleeP > 0)
+                        Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 12),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          color: const Color(0xFFff8800).withOpacity(0.08),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  const Text(
+                                    '⚠ SUBJECT MAY FLEE',
+                                    style: TextStyle(
+                                      color: Color(0xFFff8800),
+                                      fontSize: 9,
+                                      letterSpacing: 2,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    '${((1 - fleeP) * 7).toInt()}s',
+                                    style: const TextStyle(
+                                      color: Color(0xFFff8800),
+                                      fontSize: 9,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 4),
+                              LinearProgressIndicator(
+                                value: fleeP,
+                                backgroundColor: const Color(0xFF1a1000),
+                                valueColor: const AlwaysStoppedAnimation(
+                                  Color(0xFFff8800),
+                                ),
+                                minHeight: 3,
                               ),
                             ],
                           ),
-                          const SizedBox(height: 4),
-                          LinearProgressIndicator(
-                            value: fleeP,
-                            backgroundColor: const Color(0xFF1a1000),
-                            valueColor: const AlwaysStoppedAnimation(
-                              Color(0xFFff8800),
-                            ),
-                            minHeight: 3,
-                          ),
-                        ],
-                      ),
-                    ),
-                  // Inventory + clues
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _Lbl('INVENTORY'), const SizedBox(height: 5),
-                        ...citizen.inventory.map(
-                          (item) => Padding(
-                            padding: const EdgeInsets.only(bottom: 3),
-                            child: Row(
-                              children: [
-                                const Text(
-                                  '▸ ',
-                                  style: TextStyle(
-                                    color: Color(0xFFff4d00),
-                                    fontSize: 10,
-                                  ),
-                                ),
-                                Text(
-                                  item,
-                                  style: const TextStyle(
-                                    color: Color(0xFF8899bb),
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                         ),
-                        const SizedBox(height: 12),
-                        _Lbl('SYSTEM ALERT'),
-                        const SizedBox(height: 5),
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFff4d00).withOpacity(0.05),
-                            border: Border.all(
-                              color: const Color(0xFFff4d00).withOpacity(0.18),
-                            ),
-                          ),
-                          child: Text(
-                            citizen.systemHint,
-                            style: const TextStyle(
-                              color: Color(0xFFff7755),
-                              fontSize: 11,
-                              height: 1.5,
-                            ),
-                          ),
-                        ),
-                        if (ca > 0) ...[
-                          const SizedBox(height: 12),
-                          _Lbl('OBSERVED BEHAVIOR'),
-                          const SizedBox(height: 5),
-                          ...citizen.clues
-                              .take(ca)
-                              .map(
-                                (c) => Container(
-                                  margin: const EdgeInsets.only(bottom: 4),
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF0d1520),
-                                    border: Border.all(
-                                      color: const Color(0xFF1a2a3a),
-                                    ),
-                                  ),
-                                  child: Text(
-                                    c,
-                                    style: const TextStyle(
-                                      color: Color(0xFF6688aa),
-                                      fontSize: 10,
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                        ],
-                        if (showFalse) ...[
-                          const SizedBox(height: 8),
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFffb347).withOpacity(0.04),
-                              border: Border.all(
-                                color: const Color(
-                                  0xFFffb347,
-                                ).withOpacity(0.18),
-                              ),
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  '⚠ ',
-                                  style: TextStyle(
-                                    color: Color(0xFFffb347),
-                                    fontSize: 10,
-                                  ),
-                                ),
-                                Expanded(
-                                  child: Text(
-                                    citizen.falseHint,
-                                    style: const TextStyle(
-                                      color: Color(0xFF887744),
-                                      fontSize: 10,
-                                      height: 1.4,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                        if (ca < citizen.clues.length &&
-                            citizen.dissidentType != DissidentType.master) ...[
-                          const SizedBox(height: 6),
-                          Text(
-                            'Observing... next clue in ${nextIn}s',
-                            style: const TextStyle(
-                              color: Color(0xFF2a2a38),
-                              fontSize: 9,
-                              letterSpacing: 1,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 14),
-                        // FLAG / CLEAR buttons — bigger and clearer
-                        Row(
+                      // Inventory + clues
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(
-                              child: GestureDetector(
-                                onTap: () => game.makeDecision(citizen, true),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 14,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: const Color(
-                                      0xFFff3355,
-                                    ).withOpacity(0.1),
-                                    border: Border.all(
-                                      color: const Color(
-                                        0xFFff3355,
-                                      ).withOpacity(0.6),
-                                      width: 1.5,
+                            _Lbl('INVENTORY'), const SizedBox(height: 5),
+                            ...citizen.inventory.map(
+                              (item) => Padding(
+                                padding: const EdgeInsets.only(bottom: 3),
+                                child: Row(
+                                  children: [
+                                    const Text(
+                                      '▸ ',
+                                      style: TextStyle(
+                                        color: Color(0xFFff4d00),
+                                        fontSize: 10,
+                                      ),
                                     ),
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      const Text(
-                                        '⚑ FLAG',
-                                        style: TextStyle(
-                                          color: Color(0xFFff3355),
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.bold,
-                                          letterSpacing: 2,
-                                        ),
+                                    Text(
+                                      item,
+                                      style: const TextStyle(
+                                        color: Color(0xFF8899bb),
+                                        fontSize: 11,
                                       ),
-                                      const SizedBox(height: 2),
-                                      const Text(
-                                        'SUSPICIOUS',
-                                        style: TextStyle(
-                                          color: Color(0xFF884455),
-                                          fontSize: 8,
-                                          letterSpacing: 2,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: GestureDetector(
-                                onTap: () => game.makeDecision(citizen, false),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 14,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: const Color(
-                                      0xFF39ff6a,
-                                    ).withOpacity(0.08),
-                                    border: Border.all(
-                                      color: const Color(
-                                        0xFF39ff6a,
-                                      ).withOpacity(0.5),
-                                      width: 1.5,
-                                    ),
-                                  ),
-                                  child: Column(
-                                    children: [
-                                      const Text(
-                                        '✓ CLEAR',
-                                        style: TextStyle(
-                                          color: Color(0xFF39ff6a),
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.bold,
-                                          letterSpacing: 2,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      const Text(
-                                        'INNOCENT',
-                                        style: TextStyle(
-                                          color: Color(0xFF336644),
-                                          fontSize: 8,
-                                          letterSpacing: 2,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                            const SizedBox(height: 12),
+                            _Lbl('SYSTEM ALERT'),
+                            const SizedBox(height: 5),
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: const Color(
+                                  0xFFff4d00,
+                                ).withOpacity(0.05),
+                                border: Border.all(
+                                  color: const Color(
+                                    0xFFff4d00,
+                                  ).withOpacity(0.18),
+                                ),
+                              ),
+                              child: Text(
+                                citizen.systemHint,
+                                style: const TextStyle(
+                                  color: Color(0xFFff7755),
+                                  fontSize: 11,
+                                  height: 1.5,
                                 ),
                               ),
                             ),
+                            if (ca > 0) ...[
+                              const SizedBox(height: 12),
+                              _Lbl('OBSERVED BEHAVIOR'),
+                              const SizedBox(height: 5),
+                              ...citizen.clues
+                                  .take(ca)
+                                  .map(
+                                    (c) => Container(
+                                      margin: const EdgeInsets.only(bottom: 4),
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF0d1520),
+                                        border: Border.all(
+                                          color: const Color(0xFF1a2a3a),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        c,
+                                        style: const TextStyle(
+                                          color: Color(0xFF6688aa),
+                                          fontSize: 10,
+                                          height: 1.4,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                            ],
+                            if (showFalse) ...[
+                              const SizedBox(height: 8),
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: const Color(
+                                    0xFFffb347,
+                                  ).withOpacity(0.04),
+                                  border: Border.all(
+                                    color: const Color(
+                                      0xFFffb347,
+                                    ).withOpacity(0.18),
+                                  ),
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      '⚠ ',
+                                      style: TextStyle(
+                                        color: Color(0xFFffb347),
+                                        fontSize: 10,
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Text(
+                                        citizen.falseHint,
+                                        style: const TextStyle(
+                                          color: Color(0xFF887744),
+                                          fontSize: 10,
+                                          height: 1.4,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                            if (ca < citizen.clues.length &&
+                                citizen.dissidentType !=
+                                    DissidentType.master) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                'Observing... next clue in ${nextIn}s',
+                                style: const TextStyle(
+                                  color: Color(0xFF2a2a38),
+                                  fontSize: 9,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 14),
+                            // FLAG / CLEAR buttons — bigger and clearer
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: GestureDetector(
+                                    onTap: () =>
+                                        game.makeDecision(citizen, true),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(
+                                          0xFFff3355,
+                                        ).withOpacity(0.1),
+                                        border: Border.all(
+                                          color: const Color(
+                                            0xFFff3355,
+                                          ).withOpacity(0.6),
+                                          width: 1.5,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        children: [
+                                          const Text(
+                                            '⚑ FLAG',
+                                            style: TextStyle(
+                                              color: Color(0xFFff3355),
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                              letterSpacing: 2,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          const Text(
+                                            'SUSPICIOUS',
+                                            style: TextStyle(
+                                              color: Color(0xFF884455),
+                                              fontSize: 8,
+                                              letterSpacing: 2,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: GestureDetector(
+                                    onTap: () =>
+                                        game.makeDecision(citizen, false),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: const Color(
+                                          0xFF39ff6a,
+                                        ).withOpacity(0.08),
+                                        border: Border.all(
+                                          color: const Color(
+                                            0xFF39ff6a,
+                                          ).withOpacity(0.5),
+                                          width: 1.5,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        children: [
+                                          const Text(
+                                            '✓ CLEAR',
+                                            style: TextStyle(
+                                              color: Color(0xFF39ff6a),
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                              letterSpacing: 2,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          const Text(
+                                            'INNOCENT',
+                                            style: TextStyle(
+                                              color: Color(0xFF336644),
+                                              fontSize: 8,
+                                              letterSpacing: 2,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
                           ],
                         ),
-                        const SizedBox(height: 16),
-                      ],
-                    ),
+                      ),
+                      // Quest panel at bottom of profile
+                      if (game.quests.isNotEmpty)
+                        _QuestPanel(quests: game.quests),
+                    ],
                   ),
-                  // Quest panel at bottom of profile
-                  if (game.quests.isNotEmpty) _QuestPanel(quests: game.quests),
-                ],
+                ),
               ),
             ),
-          ),
+          ],
         );
       },
     );
